@@ -1,5 +1,10 @@
 # Copied from: https://colab.research.google.com/github/roboflow-ai/notebooks/blob/main/notebooks/train-huggingface-detr-on-custom-dataset.ipynb
 
+# Specifically for ampere GPUs
+import torch
+# Faster, but less precise
+torch.set_float32_matmul_precision("high")
+
 import os
 import pytorch_lightning as pl
 import torch
@@ -13,14 +18,21 @@ from transformers import DetrForObjectDetection, DetrImageProcessor
 # ===
 # Settings
 # ===
-ROOT_DIR = "."
+ROOT_DIR = "/home/rawhad/personal_jobs/GUI_Detection/GUI_Component_Detection"
 
 LR = 1e-4
 LR_BACKBONE = 1e-5
 WEIGHT_DECAY = 1e-4
-BATCH_SIZE = 32
 NUM_EPOCHS = 50
-N_GPUS = 1
+
+N_GPUS = torch.cuda.device_count()
+BATCH_PER_GPU = 8
+FINAL_BATCH_SIZE = 32
+BATCH_SIZE = BATCH_PER_GPU * N_GPUS
+GRAD_ACCUMULATION = int(FINAL_BATCH_SIZE // BATCH_SIZE)
+print(f'Batch Size:                   {BATCH_SIZE:3d}')
+print(f'Gradient Accumulation Steps:  {GRAD_ACCUMULATION:3d}')
+
 MODEL_PATH = os.path.join(ROOT_DIR, "custom-model")
 
 CHECKPOINT = 'facebook/detr-resnet-50'
@@ -28,12 +40,13 @@ CONFIDENCE_TRESHOLD = 0.5
 IOU_TRESHOLD = 0.8
 
 # ds settings
-DATA_DIR = os.path.join(ROOT_DIR, "data")
+DATA_DIR = os.path.join(ROOT_DIR, "dataset")
 ANNOTATION_FILE_NAME = "_annotations.coco.json"
 TRAIN_DIRECTORY = os.path.join(DATA_DIR, "train")
 VAL_DIRECTORY = os.path.join(DATA_DIR, "valid")
 TEST_DIRECTORY = os.path.join(DATA_DIR, "test")
-NUM_WORKERS = 4
+
+NUM_WORKERS = min(2, (os.cpu_count() - 2) // 3)
 
 
 # ===
@@ -80,7 +93,7 @@ def collate_fn(batch):
 # Model
 # ===
 class Detr(pl.LightningModule):
-  def __init__(self, lr, lr_backbone, weight_decay):
+  def __init__(self, lr, lr_backbone, weight_decay, id2label):
     super().__init__()
     self.model = DetrForObjectDetection.from_pretrained(
       pretrained_model_name_or_path=CHECKPOINT,
@@ -177,12 +190,14 @@ if __name__ == '__main__':
     persistent_workers=True
   )
 
+  categories = TRAIN_DATASET.coco.cats
+  id2label = {k: v['name'] for k,v in categories.items()}
   # model
-  model = Detr(lr=LR, lr_backbone=LR_BACKBONE, weight_decay=WEIGHT_DECAY)
+  model = Detr(lr=LR, lr_backbone=LR_BACKBONE, weight_decay=WEIGHT_DECAY, id2label=id2label)
 
   # sanity check
-  batch = next(iter(TRAIN_DATALOADER))
-  outputs = model(pixel_values=batch['pixel_values'], pixel_mask=batch['pixel_mask'])
+  #batch = next(iter(TRAIN_DATALOADER))
+  #outputs = model(pixel_values=batch['pixel_values'], pixel_mask=batch['pixel_mask'])
 
 
   # settings
@@ -191,9 +206,14 @@ if __name__ == '__main__':
     accelerator="gpu",
     max_epochs=NUM_EPOCHS,
     gradient_clip_val=0.1,
-    accumulate_grad_batches=1,
+    accumulate_grad_batches=GRAD_ACCUMULATION,
     log_every_n_steps=5,
-    precision="16-mixed",
+    precision="bf16-mixed",
+    benchmark=True,  # cuDNN benchmark to speed training for constant input sizes
+    # following flags are set for understanding speed
+    #callbacks=[pl.callbacks.DeviceStatsMonitor(cpu_stats=False)],
+    #profiler='simple',
+    #fast_dev_run=10,
   )
   trainer.fit(model)
 

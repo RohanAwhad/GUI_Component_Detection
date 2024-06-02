@@ -23,7 +23,7 @@ ROOT_DIR = "/home/rawhad/personal_jobs/GUI_Detection/GUI_Component_Detection"
 LR = 1e-4
 LR_BACKBONE = 1e-5
 WEIGHT_DECAY = 1e-4
-NUM_EPOCHS = 50
+NUM_EPOCHS = 100
 
 N_GPUS = torch.cuda.device_count()
 BATCH_PER_GPU = 8
@@ -35,7 +35,7 @@ print(f'Gradient Accumulation Steps:  {GRAD_ACCUMULATION:3d}')
 
 MODEL_PATH = os.path.join(ROOT_DIR, "custom-model")
 
-CHECKPOINT = 'facebook/detr-resnet-50'
+CHECKPOINT = 'facebook/detr-resnet-101'
 CONFIDENCE_TRESHOLD = 0.5
 IOU_TRESHOLD = 0.8
 
@@ -146,6 +146,13 @@ class Detr(pl.LightningModule):
   def train_dataloader(self): return TRAIN_DATALOADER
   def val_dataloader(self): return VAL_DATALOADER
 
+# ===
+# Custom Callback to save HF model
+# ===
+class SaveModelCallback(pl.Callback):
+  def __init__(self, model_path): self.model_path = model_path
+  def on_validation_epoch_end(self, trainer, pl_module): pl_module.model.save_pretrained(self.model_path)
+
 
 if __name__ == '__main__':
 
@@ -196,8 +203,8 @@ if __name__ == '__main__':
   model = Detr(lr=LR, lr_backbone=LR_BACKBONE, weight_decay=WEIGHT_DECAY, id2label=id2label)
 
   # sanity check
-  #batch = next(iter(TRAIN_DATALOADER))
-  #outputs = model(pixel_values=batch['pixel_values'], pixel_mask=batch['pixel_mask'])
+  batch = next(iter(TRAIN_DATALOADER))
+  outputs = model(pixel_values=batch['pixel_values'], pixel_mask=batch['pixel_mask'])
 
 
   # settings
@@ -210,12 +217,10 @@ if __name__ == '__main__':
     log_every_n_steps=5,
     precision="bf16-mixed",
     benchmark=True,  # cuDNN benchmark to speed training for constant input sizes
+    callbacks=[SaveModelCallback(model_path=MODEL_PATH)],
     # following flags are set for understanding speed
     #callbacks=[pl.callbacks.DeviceStatsMonitor(cpu_stats=False)],
     #profiler='simple',
     #fast_dev_run=10,
   )
   trainer.fit(model)
-
-  # save the model
-  model.model.save_pretrained(MODEL_PATH)
